@@ -70,3 +70,51 @@ jobs:
           context: .
           push: true
           tags: ghcr.io/eternity-mlops/mlops-quebec:${{ github.sha }}
+
+          build-and-push:
+    name: Budowanie i publikacja obrazu
+    needs: checks
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Pobranie kodu
+        uses: actions/checkout@v4
+
+      - name: Logowanie do rejestru GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Budowanie i wysłanie obrazu z tagiem commitu
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: ghcr.io/${{ github.repository }}:${{ github.sha }}
+
+  deploy:
+    name: Wdrożenie na produkcję (CD)
+    needs: build-and-push
+    runs-on: self-hosted
+    steps:
+      - name: Pobranie kodu
+        uses: actions/checkout@v4
+
+      - name: Podmiana tagu w manifeście Kubernetes
+        run: |
+          sed -i 's|image: ghcr.io/.*|image: ghcr.io/${{ github.repository }}:${{ github.sha }}|g' k8s/deployment.yaml
+
+      - name: Wdrożenie i automatyczne wycofanie w razie błędu
+        run: |
+          kubectl apply -f k8s/
+          
+          if ! kubectl rollout status deployment/mlops-quebec --timeout=60s; then
+            echo "Wdrożenie nie powiodło się – uruchamiam rollback..."
+            kubectl rollout undo deployment/mlops-quebec
+            exit 1
+          fi
